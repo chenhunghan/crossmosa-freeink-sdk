@@ -1,5 +1,11 @@
 #include "InputManager.h"
 
+// Metalio E-Ink 4: also report on-screen CST816S contacts (default: cover keys
+// only). Build with -DMETALIO_SCREEN_TOUCH=1 to enable.
+#ifndef METALIO_SCREEN_TOUCH
+#define METALIO_SCREEN_TOUCH 0
+#endif
+
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #include <driver/gpio.h>
@@ -841,8 +847,9 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
 
 #if FREEINK_CAP_TOUCH
 // CST816S cover keys (Metalio E-Ink 4). Ported from Free-Ink/freeink-sdk
-// 5d3b5cd, reduced to the three printed keys below the panel: CrossMosa is a
-// button-driven UI, so on-screen contacts are ignored. The keys take the X4
+// 5d3b5cd. By default only the three printed keys below the panel are used:
+// CrossMosa is a button-driven UI, so on-screen contacts are ignored unless
+// the build sets METALIO_SCREEN_TOUCH=1. The keys take the X4
 // front-button roles: HOME = BACK, the two pills = LEFT / RIGHT (tabs, list
 // and page navigation); BOOT = confirm, volume +/- = UP / DOWN.
 // The CST816S can NACK until the first touch: never gate on an ID probe.
@@ -925,6 +932,33 @@ void InputManager::pollCst816s(const unsigned long now) {
   if (rawY < 800) {
     if (cstVirtualButtons)
       release();
+#if METALIO_SCREEN_TOUCH
+    // Portrait digitizer -> native landscape panel (swapXY + flipY profile).
+    const uint16_t x = t.swapXY ? rawY : rawX;
+    const uint16_t y = t.swapXY ? rawX : rawY;
+    if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) {
+      release();
+      return;
+    }
+    touchPoint = {true, mapTouchAxis(x, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX),
+                  mapTouchAxis(y, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY), now};
+    if (t.flipX)
+      touchPoint.x = t.rawMaxX - t.rawMinX - touchPoint.x;
+    if (t.flipY)
+      touchPoint.y = t.rawMaxY - t.rawMinY - touchPoint.y;
+    if (!touchPressed) {
+      touchPressed = true;
+      touchPressedEvent = true;
+      touchDownPoint = touchUpPoint = touchPoint;
+      touchMovedBeyondTapSlop = false;
+    } else {
+      touchUpPoint = touchPoint;
+      const int dx = absInt(int(touchPoint.x) - int(touchDownPoint.x));
+      const int dy = absInt(int(touchPoint.y) - int(touchDownPoint.y));
+      if (dx > TOUCH_TAP_SLOP_PX || dy > TOUCH_TAP_SLOP_PX)
+        touchMovedBeyondTapSlop = true;
+    }
+#endif
     return;
   }
   // Vendor cover key centers (portrait digitizer): HOME=(80,900),
